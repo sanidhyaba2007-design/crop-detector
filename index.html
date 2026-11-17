@@ -1,0 +1,294 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#2e7d32">
+<title>Crop Disease Detector</title>
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icon.svg">
+<style>
+  :root{--g:#2e7d32;--gl:#e8f5e9;--bg:#f6f8f5;--tx:#1b2a1b;--warn:#b26a00;--card:#fff;--bd:#d9e2d6}
+  *{box-sizing:border-box}
+  body{margin:0;font-family:system-ui,Arial,sans-serif;background:var(--bg);color:var(--tx)}
+  header{background:var(--g);color:#fff;padding:14px 16px}
+  header h1{margin:0;font-size:20px}
+  header small{opacity:.85}
+  main{max-width:560px;margin:0 auto;padding:14px 16px 40px}
+  .card{background:var(--card);border:1px solid var(--bd);border-radius:12px;padding:14px;margin-bottom:14px}
+  .row{display:flex;gap:8px;flex-wrap:wrap}
+  button,.btn{border:0;border-radius:10px;padding:12px 14px;font-size:16px;background:var(--g);color:#fff;cursor:pointer}
+  button.alt,.btn.alt{background:var(--gl);color:var(--g);border:1px solid var(--bd)}
+  button:disabled{opacity:.5}
+  select{padding:10px;border-radius:10px;border:1px solid var(--bd);font-size:16px;background:#fff}
+  #preview{width:100%;max-height:300px;object-fit:contain;border-radius:10px;background:#eee;display:none}
+  .status{font-size:14px;color:#555}
+  .result h2{margin:6px 0}
+  .ok{color:var(--g)} .notsure{color:var(--warn)}
+  .bar{height:8px;background:#e3e8e1;border-radius:6px;overflow:hidden;margin:3px 0 8px}
+  .bar>i{display:block;height:100%;background:var(--g)}
+  .small{font-size:13px;color:#555}
+  .hist{display:flex;gap:10px;align-items:center;border-bottom:1px solid var(--bd);padding:8px 0}
+  .hist img{width:48px;height:48px;object-fit:cover;border-radius:8px}
+  input[type=file]{display:none}
+</style>
+</head>
+<body>
+<header>
+  <h1 id="title">Crop Disease Detector</h1>
+  <small id="sub">Rice and Maize · works offline</small>
+</header>
+<main>
+  <div class="card">
+    <div class="row" style="align-items:center;justify-content:space-between">
+      <label for="lang"><b id="lblLang">Language</b></label>
+      <select id="lang">
+        <option value="en">English</option>
+        <option value="kn">ಕನ್ನಡ</option>
+        <option value="hi">हिन्दी</option>
+      </select>
+    </div>
+    <p class="status" id="status">Loading model…</p>
+  </div>
+
+  <div class="card">
+    <div class="row">
+      <label class="btn" for="cam" id="btnCam">Take photo</label>
+      <label class="btn alt" for="gal" id="btnGal">Choose photo</label>
+    </div>
+    <input type="file" id="cam" accept="image/*" capture="environment">
+    <input type="file" id="gal" accept="image/*">
+    <img id="preview" alt="leaf photo" style="margin-top:12px">
+    <canvas id="cv" width="224" height="224" style="display:none"></canvas>
+  </div>
+
+  <div class="card result" id="resultCard" style="display:none">
+    <h2 id="resTitle"></h2>
+    <div id="resBars"></div>
+    <p id="resAdvice"></p>
+    <p class="small" id="resNote"></p>
+    <button class="alt" id="btnSpeak">🔊 Read aloud</button>
+  </div>
+
+  <div class="card">
+    <div class="row" style="justify-content:space-between;align-items:center">
+      <b id="lblHist">Scan history</b>
+      <button class="alt" id="btnClear" style="padding:6px 10px;font-size:14px">Clear</button>
+    </div>
+    <div id="hist"></div>
+  </div>
+
+  <p class="small" id="foot"></p>
+</main>
+
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.17.0/dist/tf.min.js"></script>
+<script>
+// ---------- settings ----------
+const THRESHOLD = 0.70;                 // below this -> "not sure, retake"
+const MODEL_URL = "model/model.json";
+// Same order the model was trained with (alphabetical folder names)
+const CLASSES = [
+  "Maize_Cercospora_leaf_spot Gray_leaf_spot",
+  "Maize_Common_rust_",
+  "Maize_Northern_Leaf_Blight",
+  "Maize_healthy",
+  "Rice_Bacterialblight",
+  "Rice_Blast",
+  "Rice_Brownspot",
+  "Rice_Tungro"
+];
+
+// ---------- text in 3 languages ----------
+const UI = {
+  en:{title:"Crop Disease Detector",sub:"Rice and Maize · works offline",lang:"Language",
+      cam:"Take photo",gal:"Choose photo",ready:"Model ready (offline)",loading:"Loading model…",
+      fail:"Could not load the model. Check the model folder.",notsure:"Not sure. Please retake the photo.",
+      tips:"Tips: one leaf, good daylight, close and in focus, plain background.",
+      hist:"Scan history",clear:"Clear",speak:"🔊 Read aloud",nov:"No voice for this language on your device.",
+      conf:"confidence",
+      note:"Confirm with your local KVK or agriculture officer before spraying anything.",
+      foot:"Trained on lab-style leaf photos. Accuracy on field photos can be lower. Only rice and maize are supported. Arecanut is coming later."},
+  kn:{title:"ಬೆಳೆ ರೋಗ ಪತ್ತೆಕಾರಕ",sub:"ಭತ್ತ ಮತ್ತು ಮೆಕ್ಕೆಜೋಳ · ಆಫ್‌ಲೈನ್‌ನಲ್ಲಿ ಕೆಲಸ ಮಾಡುತ್ತದೆ",lang:"ಭಾಷೆ",
+      cam:"ಫೋಟೋ ತೆಗೆಯಿರಿ",gal:"ಫೋಟೋ ಆಯ್ಕೆಮಾಡಿ",ready:"ಮಾದರಿ ಸಿದ್ಧ (ಆಫ್‌ಲೈನ್)",loading:"ಮಾದರಿ ಲೋಡ್ ಆಗುತ್ತಿದೆ…",
+      fail:"ಮಾದರಿಯನ್ನು ಲೋಡ್ ಮಾಡಲಾಗಲಿಲ್ಲ.",notsure:"ಖಚಿತವಿಲ್ಲ. ದಯವಿಟ್ಟು ಮತ್ತೆ ಫೋಟೋ ತೆಗೆಯಿರಿ.",
+      tips:"ಸಲಹೆ: ಒಂದು ಎಲೆ, ಉತ್ತಮ ಹಗಲು ಬೆಳಕು, ಹತ್ತಿರದಿಂದ ಸ್ಪಷ್ಟವಾಗಿ, ಸರಳ ಹಿನ್ನೆಲೆ.",
+      hist:"ಸ್ಕ್ಯಾನ್ ಇತಿಹಾಸ",clear:"ಅಳಿಸಿ",speak:"🔊 ಓದಿ ಹೇಳಿ",nov:"ನಿಮ್ಮ ಸಾಧನದಲ್ಲಿ ಈ ಭಾಷೆಯ ಧ್ವನಿ ಇಲ್ಲ.",
+      conf:"ವಿಶ್ವಾಸ",
+      note:"ಯಾವುದೇ ಔಷಧಿ ಸಿಂಪಡಿಸುವ ಮೊದಲು ಸ್ಥಳೀಯ ಕೆವಿಕೆ ಅಥವಾ ಕೃಷಿ ಅಧಿಕಾರಿಯನ್ನು ಸಂಪರ್ಕಿಸಿ.",
+      foot:"ಪ್ರಯೋಗಾಲಯ ಶೈಲಿಯ ಎಲೆ ಫೋಟೋಗಳ ಮೇಲೆ ತರಬೇತಿ ನೀಡಲಾಗಿದೆ. ಹೊಲದ ಫೋಟೋಗಳಲ್ಲಿ ನಿಖರತೆ ಕಡಿಮೆ ಇರಬಹುದು. ಭತ್ತ ಮತ್ತು ಮೆಕ್ಕೆಜೋಳ ಮಾತ್ರ. ಅಡಿಕೆ ನಂತರ ಬರಲಿದೆ."},
+  hi:{title:"फसल रोग पहचान",sub:"चावल और मक्का · ऑफ़लाइन चलता है",lang:"भाषा",
+      cam:"फोटो लें",gal:"फोटो चुनें",ready:"मॉडल तैयार (ऑफ़लाइन)",loading:"मॉडल लोड हो रहा है…",
+      fail:"मॉडल लोड नहीं हो सका।",notsure:"पक्का नहीं है। कृपया फोटो दोबारा लें।",
+      tips:"सुझाव: एक पत्ती, अच्छी दिन की रोशनी, पास से और साफ़, सादा पृष्ठभूमि।",
+      hist:"स्कैन इतिहास",clear:"मिटाएँ",speak:"🔊 सुनें",nov:"आपके डिवाइस पर इस भाषा की आवाज़ नहीं है।",
+      conf:"विश्वास",
+      note:"कुछ भी छिड़कने से पहले अपने स्थानीय KVK या कृषि अधिकारी से पुष्टि करें।",
+      foot:"प्रयोगशाला जैसी पत्ती की फोटो पर प्रशिक्षित। खेत की फोटो पर सटीकता कम हो सकती है। केवल चावल और मक्का। सुपारी बाद में आएगी।"}
+};
+
+const INFO = {
+ "Maize_Cercospora_leaf_spot Gray_leaf_spot":{
+  name:{en:"Maize: Gray leaf spot",kn:"ಮೆಕ್ಕೆಜೋಳ: ಬೂದು ಎಲೆ ಚುಕ್ಕೆ ರೋಗ",hi:"मक्का: ग्रे लीफ स्पॉट"},
+  adv:{en:"A fungal disease. Rectangular grey-brown spots on leaves. Rotate crops, remove crop residue and avoid dense planting. If it spreads, ask your agriculture officer for a suitable fungicide.",
+       kn:"ಇದು ಶಿಲೀಂಧ್ರ ರೋಗ. ಎಲೆಗಳ ಮೇಲೆ ಆಯತಾಕಾರದ ಬೂದು-ಕಂದು ಚುಕ್ಕೆಗಳು. ಬೆಳೆ ಪರಿವರ್ತನೆ ಮಾಡಿ, ಬೆಳೆ ಅವಶೇಷ ತೆಗೆಯಿರಿ, ಗಿಡಗಳನ್ನು ದಟ್ಟವಾಗಿ ನೆಡಬೇಡಿ. ರೋಗ ಹರಡಿದರೆ ಕೃಷಿ ಅಧಿಕಾರಿಯಿಂದ ಸೂಕ್ತ ಶಿಲೀಂಧ್ರನಾಶಕದ ಸಲಹೆ ಪಡೆಯಿರಿ.",
+       hi:"यह फफूंद रोग है। पत्तियों पर आयताकार भूरे-धूसर धब्बे होते हैं। फसल चक्र अपनाएँ, फसल अवशेष हटाएँ और पौधे घने न लगाएँ। रोग फैले तो कृषि अधिकारी से उपयुक्त फफूंदनाशक की सलाह लें।"}},
+ "Maize_Common_rust_":{
+  name:{en:"Maize: Common rust",kn:"ಮೆಕ್ಕೆಜೋಳ: ಸಾಮಾನ್ಯ ತುಕ್ಕು ರೋಗ",hi:"मक्का: कॉमन रस्ट (गेरुआ)"},
+  adv:{en:"A fungal disease. Small orange-brown powdery pustules on both sides of the leaf. Plant resistant varieties, remove infected leaves if few, and watch the field after humid weather. Ask your agriculture officer if it spreads.",
+       kn:"ಇದು ಶಿಲೀಂಧ್ರ ರೋಗ. ಎಲೆಯ ಎರಡೂ ಬದಿ ಸಣ್ಣ ಕಿತ್ತಳೆ-ಕಂದು ಪುಡಿಯಂತಹ ಗುಳ್ಳೆಗಳು. ರೋಗ ನಿರೋಧಕ ತಳಿಗಳನ್ನು ಬಳಸಿ, ಕಡಿಮೆ ಇದ್ದರೆ ಬಾಧಿತ ಎಲೆ ತೆಗೆಯಿರಿ, ತೇವ ಹವಾಮಾನದ ನಂತರ ಹೊಲ ಗಮನಿಸಿ. ಹರಡಿದರೆ ಕೃಷಿ ಅಧಿಕಾರಿಯನ್ನು ಕೇಳಿ.",
+       hi:"यह फफूंद रोग है। पत्ती के दोनों ओर छोटे नारंगी-भूरे पाउडर जैसे दाने होते हैं। प्रतिरोधी किस्में लगाएँ, कम हों तो संक्रमित पत्तियाँ हटाएँ और नमी वाले मौसम के बाद खेत देखें। फैले तो कृषि अधिकारी से पूछें।"}},
+ "Maize_Northern_Leaf_Blight":{
+  name:{en:"Maize: Northern leaf blight",kn:"ಮೆಕ್ಕೆಜೋಳ: ಉತ್ತರ ಎಲೆ ಅಂಗಮಾರಿ",hi:"मक्का: नॉर्दर्न लीफ ब्लाइट"},
+  adv:{en:"A fungal disease. Long grey-green cigar-shaped lesions on leaves. Rotate crops, bury or remove crop residue, and use resistant varieties. Ask your agriculture officer about a fungicide if it spreads.",
+       kn:"ಇದು ಶಿಲೀಂಧ್ರ ರೋಗ. ಎಲೆಗಳ ಮೇಲೆ ಉದ್ದನೆಯ ಬೂದು-ಹಸಿರು ಸಿಗಾರ್ ಆಕಾರದ ಗಾಯಗಳು. ಬೆಳೆ ಪರಿವರ್ತನೆ ಮಾಡಿ, ಅವಶೇಷಗಳನ್ನು ಹೂತುಹಾಕಿ ಅಥವಾ ತೆಗೆಯಿರಿ, ನಿರೋಧಕ ತಳಿ ಬಳಸಿ. ಹರಡಿದರೆ ಕೃಷಿ ಅಧಿಕಾರಿಯನ್ನು ಸಂಪರ್ಕಿಸಿ.",
+       hi:"यह फफूंद रोग है। पत्तियों पर लंबे भूरे-हरे सिगार जैसे धब्बे होते हैं। फसल चक्र अपनाएँ, अवशेष दबाएँ या हटाएँ, प्रतिरोधी किस्में लगाएँ। फैले तो कृषि अधिकारी से फफूंदनाशक पूछें।"}},
+ "Maize_healthy":{
+  name:{en:"Maize: Healthy leaf",kn:"ಮೆಕ್ಕೆಜೋಳ: ಆರೋಗ್ಯಕರ ಎಲೆ",hi:"मक्का: स्वस्थ पत्ती"},
+  adv:{en:"No disease seen in this photo. Keep checking the field regularly, especially after rain or humid weather.",
+       kn:"ಈ ಫೋಟೋದಲ್ಲಿ ರೋಗ ಕಂಡುಬಂದಿಲ್ಲ. ಮಳೆ ಅಥವಾ ತೇವ ಹವಾಮಾನದ ನಂತರ ಹೊಲವನ್ನು ನಿಯಮಿತವಾಗಿ ಪರಿಶೀಲಿಸಿ.",
+       hi:"इस फोटो में कोई रोग नहीं दिखा। खेत की नियमित जाँच करते रहें, खासकर बारिश या नमी के बाद।"}},
+ "Rice_Bacterialblight":{
+  name:{en:"Rice: Bacterial blight",kn:"ಭತ್ತ: ಬ್ಯಾಕ್ಟೀರಿಯಾ ಎಲೆ ಅಂಗಮಾರಿ",hi:"चावल: जीवाणु झुलसा (बैक्टीरियल ब्लाइट)"},
+  adv:{en:"A bacterial disease. Water-soaked streaks along leaf edges that turn yellow and dry. Avoid excess nitrogen fertiliser, drain standing water, use clean seed and resistant varieties. Ask your agriculture officer for local advice.",
+       kn:"ಇದು ಬ್ಯಾಕ್ಟೀರಿಯಾ ರೋಗ. ಎಲೆಯ ಅಂಚಿನಲ್ಲಿ ನೀರಿನಂತಹ ಗೆರೆಗಳು, ನಂತರ ಹಳದಿ ಆಗಿ ಒಣಗುತ್ತವೆ. ಹೆಚ್ಚು ಸಾರಜನಕ ಗೊಬ್ಬರ ಬೇಡ, ನಿಂತ ನೀರನ್ನು ಹರಿಸಿ, ಶುದ್ಧ ಬೀಜ ಮತ್ತು ನಿರೋಧಕ ತಳಿ ಬಳಸಿ. ಸ್ಥಳೀಯ ಸಲಹೆಗೆ ಕೃಷಿ ಅಧಿಕಾರಿಯನ್ನು ಕೇಳಿ.",
+       hi:"यह जीवाणु रोग है। पत्ती के किनारों पर पानी जैसी धारियाँ बनती हैं जो पीली होकर सूख जाती हैं। नाइट्रोजन खाद अधिक न दें, खड़ा पानी निकालें, साफ़ बीज और प्रतिरोधी किस्में लें। स्थानीय सलाह के लिए कृषि अधिकारी से पूछें।"}},
+ "Rice_Blast":{
+  name:{en:"Rice: Blast",kn:"ಭತ್ತ: ಬ್ಲಾಸ್ಟ್ (ಕೊಳೆ ರೋಗ)",hi:"चावल: ब्लास्ट (झोंका रोग)"},
+  adv:{en:"A fungal disease. Diamond-shaped spots with grey centres and brown edges. Avoid excess nitrogen, keep the field balanced in water, and use resistant varieties. Ask your agriculture officer for a suitable fungicide.",
+       kn:"ಇದು ಶಿಲೀಂಧ್ರ ರೋಗ. ಬೂದು ಮಧ್ಯ ಮತ್ತು ಕಂದು ಅಂಚಿನ ವಜ್ರಾಕಾರದ ಚುಕ್ಕೆಗಳು. ಹೆಚ್ಚು ಸಾರಜನಕ ಬೇಡ, ನೀರನ್ನು ಸಮತೋಲನದಲ್ಲಿ ಇಡಿ, ನಿರೋಧಕ ತಳಿ ಬಳಸಿ. ಸೂಕ್ತ ಶಿಲೀಂಧ್ರನಾಶಕಕ್ಕೆ ಕೃಷಿ ಅಧಿಕಾರಿಯನ್ನು ಕೇಳಿ.",
+       hi:"यह फफूंद रोग है। बीच में धूसर और किनारे भूरे हीरे के आकार के धब्बे। अधिक नाइट्रोजन न दें, खेत में पानी संतुलित रखें, प्रतिरोधी किस्में लगाएँ। उपयुक्त फफूंदनाशक के लिए कृषि अधिकारी से पूछें।"}},
+ "Rice_Brownspot":{
+  name:{en:"Rice: Brown spot",kn:"ಭತ್ತ: ಕಂದು ಚುಕ್ಕೆ ರೋಗ",hi:"चावल: भूरा धब्बा (ब्राउन स्पॉट)"},
+  adv:{en:"A fungal disease, often linked to poor soil nutrition. Small round brown spots on leaves. Improve soil fertility, use clean seed, and keep the field free of weeds. Ask your agriculture officer if it spreads.",
+       kn:"ಇದು ಶಿಲೀಂಧ್ರ ರೋಗ, ಮಣ್ಣಿನ ಪೋಷಕಾಂಶ ಕೊರತೆಯೊಂದಿಗೆ ಸಂಬಂಧ. ಎಲೆಗಳ ಮೇಲೆ ಸಣ್ಣ ದುಂಡನೆಯ ಕಂದು ಚುಕ್ಕೆಗಳು. ಮಣ್ಣಿನ ಫಲವತ್ತತೆ ಹೆಚ್ಚಿಸಿ, ಶುದ್ಧ ಬೀಜ ಬಳಸಿ, ಕಳೆ ತೆಗೆಯಿರಿ. ಹರಡಿದರೆ ಕೃಷಿ ಅಧಿಕಾರಿಯನ್ನು ಕೇಳಿ.",
+       hi:"यह फफूंद रोग है, अक्सर मिट्टी में पोषक तत्वों की कमी से जुड़ा। पत्तियों पर छोटे गोल भूरे धब्बे। मिट्टी की उर्वरता सुधारें, साफ़ बीज लें, खेत खरपतवार-मुक्त रखें। फैले तो कृषि अधिकारी से पूछें।"}},
+ "Rice_Tungro":{
+  name:{en:"Rice: Tungro",kn:"ಭತ್ತ: ಟುಂಗ್ರೋ ವೈರಸ್",hi:"चावल: टुंग्रो विषाणु"},
+  adv:{en:"A virus spread by green leafhopper insects. Leaves turn yellow-orange and plants stay stunted. Remove and destroy infected plants, control leafhoppers, and use resistant varieties. Contact your agriculture officer quickly.",
+       kn:"ಹಸಿರು ಜಿಗಿಹುಳುಗಳಿಂದ ಹರಡುವ ವೈರಸ್ ರೋಗ. ಎಲೆಗಳು ಹಳದಿ-ಕಿತ್ತಳೆ ಆಗಿ ಗಿಡ ಕುಂಠಿತವಾಗುತ್ತದೆ. ಬಾಧಿತ ಗಿಡಗಳನ್ನು ತೆಗೆದು ನಾಶಮಾಡಿ, ಜಿಗಿಹುಳು ನಿಯಂತ್ರಿಸಿ, ನಿರೋಧಕ ತಳಿ ಬಳಸಿ. ತಕ್ಷಣ ಕೃಷಿ ಅಧಿಕಾರಿಯನ್ನು ಸಂಪರ್ಕಿಸಿ.",
+       hi:"यह हरे पत्ती फुदके (लीफहॉपर) से फैलने वाला विषाणु रोग है। पत्तियाँ पीली-नारंगी हो जाती हैं और पौधे बौने रहते हैं। संक्रमित पौधे हटाकर नष्ट करें, फुदकों को नियंत्रित करें, प्रतिरोधी किस्में लगाएँ। तुरंत कृषि अधिकारी से संपर्क करें।"}}
+};
+
+// ---------- custom Rescaling layer (in case this TF.js build lacks it) ----------
+class Rescaling extends tf.layers.Layer {
+  constructor(cfg){ super(cfg); this.scale = cfg.scale; this.offset = cfg.offset; }
+  computeOutputShape(s){ return s; }
+  call(inputs){ return tf.tidy(()=>{ const x = Array.isArray(inputs)?inputs[0]:inputs; return x.mul(this.scale).add(this.offset); }); }
+  getConfig(){ return Object.assign(super.getConfig(), {scale:this.scale, offset:this.offset}); }
+  static get className(){ return "Rescaling"; }
+}
+try { tf.serialization.registerClass(Rescaling); } catch(e) { /* already built in */ }
+
+// ---------- app ----------
+const $ = id => document.getElementById(id);
+let model = null, lang = localStorage.getItem("lang") || "en", last = null;
+
+function t(k){ return UI[lang][k]; }
+function applyLang(){
+  document.documentElement.lang = lang;
+  $("title").textContent = t("title"); $("sub").textContent = t("sub");
+  $("lblLang").textContent = t("lang"); $("btnCam").textContent = t("cam"); $("btnGal").textContent = t("gal");
+  $("lblHist").textContent = t("hist"); $("btnClear").textContent = t("clear"); $("btnSpeak").textContent = t("speak");
+  $("foot").textContent = t("foot");
+  $("status").textContent = model ? t("ready") : t("loading");
+  $("lang").value = lang;
+  if(last) showResult(last); renderHistory();
+}
+
+async function loadModel(){
+  try{
+    model = await tf.loadLayersModel(MODEL_URL);
+    tf.tidy(()=>model.predict(tf.zeros([1,224,224,3])));   // warm up
+    $("status").textContent = t("ready");
+  }catch(e){
+    console.error(e); $("status").textContent = t("fail") + " (" + e.message + ")";
+  }
+}
+
+function loadImage(file){
+  return new Promise((res,rej)=>{
+    const img = new Image();
+    img.onload = ()=>res(img); img.onerror = rej;
+    img.src = URL.createObjectURL(file);
+  });
+}
+
+async function handleFile(file){
+  if(!file || !model) return;
+  const img = await loadImage(file);
+  const pv = $("preview"); pv.src = img.src; pv.style.display = "block";
+  const cv = $("cv"), ctx = cv.getContext("2d");
+  ctx.drawImage(img, 0, 0, 224, 224);
+  const probs = tf.tidy(()=>{
+    const x = tf.browser.fromPixels(cv).toFloat().expandDims(0);  // 0..255, model rescales itself
+    return model.predict(x).dataSync();
+  });
+  const arr = Array.from(probs);
+  const order = arr.map((p,i)=>[p,i]).sort((a,b)=>b[0]-a[0]);
+  const top = order[0];
+  last = { cls: CLASSES[top[1]], conf: top[0], notSure: top[0] < THRESHOLD,
+           top3: order.slice(0,3).map(([p,i])=>({cls:CLASSES[i],p})) };
+  showResult(last);
+  saveHistory(last, thumb(img));
+}
+
+function thumb(img){
+  const c = document.createElement("canvas"); c.width = 96; c.height = 96;
+  c.getContext("2d").drawImage(img,0,0,96,96); return c.toDataURL("image/jpeg",0.6);
+}
+
+function showResult(r){
+  $("resultCard").style.display = "block";
+  const T = $("resTitle");
+  if(r.notSure){
+    T.className = "notsure"; T.textContent = "⚠ " + t("notsure");
+    $("resAdvice").textContent = t("tips");
+  }else{
+    const info = INFO[r.cls];
+    T.className = "ok"; T.textContent = (info ? info.name[lang] : r.cls) + " (" + Math.round(r.conf*100) + "%)";
+    $("resAdvice").textContent = info ? info.adv[lang] : "";
+  }
+  $("resNote").textContent = t("note");
+  $("resBars").innerHTML = r.top3.map(x=>{
+    const n = INFO[x.cls] ? INFO[x.cls].name[lang] : x.cls;
+    return `<div class="small">${n} — ${Math.round(x.p*100)}% ${t("conf")}</div><div class="bar"><i style="width:${Math.round(x.p*100)}%"></i></div>`;
+  }).join("");
+}
+
+function speak(){
+  if(!last || !("speechSynthesis" in window)) return;
+  const text = $("resTitle").textContent + ". " + $("resAdvice").textContent + " " + $("resNote").textContent;
+  const code = {en:"en-IN", kn:"kn-IN", hi:"hi-IN"}[lang];
+  const voices = speechSynthesis.getVoices();
+  const has = voices.some(v=>v.lang && v.lang.replace("_","-").toLowerCase().startsWith(code.slice(0,2)));
+  if(voices.length && !has){ alert(t("nov")); return; }
+  speechSynthesis.cancel();
+  const u = new SpeechSynthesisUtterance(text); u.lang = code; speechSynthesis.speak(u);
+}
+
+function saveHistory(r, th){
+  let h = []; try{ h = JSON.parse(localStorage.getItem("hist")||"[]"); }catch(e){}
+  h.unshift({ts:Date.now(), cls:r.cls, conf:r.conf, notSure:r.notSure, th});
+  h = h.slice(0,20);
+  try{ localStorage.setItem("hist", JSON.stringify(h)); }catch(e){}
+  renderHistory();
+}
+function renderHistory(){
+  let h = []; try{ h = JSON.parse(localStorage.getItem("hist")||"[]"); }catch(e){}
+  $("hist").innerHTML = h.map(x=>{
+    const n = x.notSure ? t("notsure") : (INFO[x.cls] ? INFO[x.cls].name[lang] : x.cls);
+    return `<div class="hist"><img src="${x.th}" alt=""><div><b>${n}</b><div class="small">${Math.round(x.conf*100)}% · ${new Date(x.ts).toLocaleString()}</div></div></div>`;
+  }).join("");
+}
+
+$("cam").addEventListener("change", e=>handleFile(e.target.files[0]));
+$("gal").addEventListener("change", e=>handleFile(e.target.files[0]));
+$("lang").addEventListener("change", e=>{ lang = e.target.value; localStorage.setItem("lang", lang); applyLang(); });
+$("btnSpeak").addEventListener("click", speak);
+$("btnClear").addEventListener("click", ()=>{ localStorage.removeItem("hist"); renderHistory(); });
+
+if("serviceWorker" in navigator){ navigator.serviceWorker.register("sw.js").catch(console.error); }
+applyLang(); loadModel();
+</script>
+</body>
+</html>
